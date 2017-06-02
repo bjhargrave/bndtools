@@ -174,7 +174,8 @@
             finalPerspective="bndtools.perspective"
             preferredPerspectives="bndtools.perspective"
             icon="icons/bndtools-logo-16x16.png"
-            name="Bnd OSGi Workspace">
+            name="Bnd OSGi Workspace"
+            project="true">
       </wizard>
    </extension>
 
@@ -551,7 +552,7 @@
             <enablement>
                <or>
                   <with variable="selection">
-                     <count value="1"/>
+                     <count value="+"/>
                      <iterate>
                         <or>
                            <!-- Java/Bnd Project -->
@@ -688,6 +689,10 @@
       </shortcut>
 
    </extension>
+   
+   <extension point="org.eclipse.ui.keywords">
+      <keyword id="bndtools.core" label="Bndtools"/>
+   </extension>
 
     <extension
           point="org.eclipse.ui.preferencePages">
@@ -695,29 +700,35 @@
              class="bndtools.preferences.ui.BndPreferencePage"
              id="bndtools.prefPages.basic"
              name="Bndtools">
+             <keywordReference id="bndtools.core"/>
        </page>
        <page
              class="bndtools.preferences.ui.BndBuildPreferencePage"
              id="bndtools.prefPages.build"
              category="bndtools.prefPages.basic"
              name="Build">
+             <keywordReference id="bndtools.core"/>
        </page>
        <page
              class="bndtools.preferences.ui.ReposPreferencePage"
              id="bndtools.prefPages.repos"
              category="bndtools.prefPages.basic"
-             name="Repositories"/>
+             name="Repositories">
+             <keywordReference id="bndtools.core"/>
+       </page>
        <page
              class="bndtools.preferences.ui.GeneratedResourcesPreferencePage"
              id="bndtools.prefPages.generatedResources"
              category="bndtools.prefPages.basic"
              name="Generated Resources">
+             <keywordReference id="bndtools.core"/>
        </page>
        <page
              class="bndtools.preferences.ui.JpmPreferencePage"
              id="bndtools.prefPages.jpm"
              category="bndtools.prefPages.basic"
              name="JPM">
+             <keywordReference id="bndtools.core"/>
        </page>
     </extension>
 	<extension point="org.eclipse.ui.propertyPages">
@@ -999,7 +1010,7 @@
          commandId="bndtools.launch.runShortcut.debug"
          schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"/>
       <key
-         sequence="M3+M2+X C"
+         sequence="M3+M2+X K"
          contextId="org.eclipse.ui.globalScope"
          commandId="bndtools.launch.junitShortcut.run"
          schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"/>
@@ -1019,8 +1030,20 @@
          commandId="bnd.launch.runShortcut.debug"
          schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"/>
    </extension>
-   
-	${cat;resources/enroute/_plugin.xml}
-	
+   <extension
+         point="org.eclipse.ui.importWizards">
+      <category
+		name="Bndtools"
+        id="bndtools.importCategory">
+      </category>
+		<wizard
+            id="bndtools.importProject"
+            category="bndtools.importCategory"
+            class="bndtools.wizards.project.ImportBndWorkspaceWizard"
+            icon="icons/bndtools-logo-16x16.png"
+            name="Existing Bnd Workspace"
+            project="true">
+      </wizard>
+   </extension>
 
  </plugin>

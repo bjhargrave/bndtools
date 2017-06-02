@@ -23,7 +23,6 @@ import org.eclipse.core.resources.IResource;
 import org.eclipse.core.resources.IResourceChangeEvent;
 import org.eclipse.core.resources.IResourceChangeListener;
 import org.eclipse.core.resources.IResourceDelta;
-import org.eclipse.core.resources.IResourceDeltaVisitor;
 import org.eclipse.core.resources.IWorkspaceRoot;
 import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.CoreException;
@@ -53,6 +52,7 @@ import aQute.bnd.osgi.Processor;
 import aQute.bnd.service.Refreshable;
 import aQute.bnd.service.RepositoryPlugin;
 import bndtools.central.RepositoriesViewRefresher.RefreshModel;
+import bndtools.preferences.BndPreferences;
 
 public class Central implements IStartupParticipant {
 
@@ -135,9 +135,8 @@ public class Central implements IStartupParticipant {
         try {
             Project model = javaProjectToModel.get(project);
             if (model == null) {
-                File projectDir = project.getProject().getLocation().makeAbsolute().toFile();
                 try {
-                    model = getProject(projectDir);
+                    model = getProject(project.getProject());
                 } catch (IllegalArgumentException e) {
                     // initialiseWorkspace();
                     // model = Central.getProject(projectDir);
@@ -183,7 +182,7 @@ public class Central implements IStartupParticipant {
         return getWorkspace().getWorkspaceRepository();
     }
 
-    public synchronized static Workspace getWorkspaceIfPresent() {
+    public static Workspace getWorkspaceIfPresent() {
         try {
             return getWorkspace();
         } catch (IllegalStateException e) {
@@ -198,41 +197,64 @@ public class Central implements IStartupParticipant {
             throw new IllegalStateException("Central is not initialised");
         }
         Workspace ws;
+        boolean resolve;
         synchronized (workspaceQueue) {
             ws = workspace;
-            if (ws != null) { // early check for workspace
-                return ws;
-            }
-            try {
-                Workspace.setDriver(Constants.BNDDRIVER_ECLIPSE);
-                Workspace.addGestalt(Constants.GESTALT_INTERACTIVE, new Attrs());
-
-                ws = Workspace.getWorkspace(getWorkspaceDirectory());
-
-                ws.addBasicPlugin(new WorkspaceListener(ws));
-                ws.addBasicPlugin(getInstance().repoListenerTracker);
-                ws.addBasicPlugin(getWorkspaceR5Repository());
-                ws.addBasicPlugin(new JobProgress());
-
-                // Initialize projects in synchronized block
-                ws.getBuildOrder();
-
-                // Monitor changes in cnf so we can refresh the workspace
-                addCnfChangeListener(ws);
-
-                workspaceRepositoryChangeDetector = new WorkspaceRepositoryChangeDetector(ws);
-
-                // The workspace has been initialized fully, set the field now
-                workspace = ws;
-            } catch (final Exception e) {
-                if (ws != null) {
-                    ws.close();
+            File workspaceDirectory = getWorkspaceDirectory();
+            if (ws != null) {
+                if (workspaceDirectory != null && ws.isDefaultWorkspace()) {
+                    ws.setFileSystem(workspaceDirectory, Workspace.CNFDIR);
+                    ws.refresh();
+                    resolve = !workspaceQueue.getPromise().isDone();
+                } else if (workspaceDirectory == null && !ws.isDefaultWorkspace()) {
+                    ws.setFileSystem(Workspace.BND_DEFAULT_WS, Workspace.CNFDIR);
+                    ws.refresh();
+                    resolve = false;
+                } else {
+                    resolve = false;
                 }
-                throw e;
+            } else {
+                try {
+                    Workspace.setDriver(Constants.BNDDRIVER_ECLIPSE);
+                    Workspace.addGestalt(Constants.GESTALT_INTERACTIVE, new Attrs());
+
+                    if (workspaceDirectory == null) {
+                        // there is no cnf project. So
+                        // we create a temp workspace
+                        ws = Workspace.createDefaultWorkspace();
+                        resolve = false;
+                    } else {
+                        ws = Workspace.getWorkspace(workspaceDirectory);
+                        resolve = true;
+                    }
+
+                    ws.setOffline(new BndPreferences().isWorkspaceOffline());
+
+                    ws.addBasicPlugin(new WorkspaceListener(ws));
+                    ws.addBasicPlugin(getInstance().repoListenerTracker);
+                    ws.addBasicPlugin(getWorkspaceR5Repository());
+                    ws.addBasicPlugin(new JobProgress());
+
+                    // Initialize projects in synchronized block
+                    ws.getBuildOrder();
+
+                    // Monitor changes in cnf so we can refresh the workspace
+                    addCnfChangeListener(ws);
+
+                    workspaceRepositoryChangeDetector = new WorkspaceRepositoryChangeDetector(ws);
+
+                    // The workspace has been initialized fully, set the field now
+                    workspace = ws;
+                } catch (final Exception e) {
+                    if (ws != null) {
+                        ws.close();
+                    }
+                    throw e;
+                }
             }
         }
-
-        workspaceQueue.resolve(ws); // notify onWorkspaceInit callbacks
+        if (resolve)
+            workspaceQueue.resolve(ws); // notify onWorkspaceInit callbacks
         return ws;
     }
 
@@ -255,9 +277,9 @@ public class Central implements IStartupParticipant {
     private static File getWorkspaceDirectory() throws CoreException {
         IWorkspaceRoot eclipseWorkspace = ResourcesPlugin.getWorkspace().getRoot();
 
-        IProject cnfProject = eclipseWorkspace.getProject("bnd");
+        IProject cnfProject = eclipseWorkspace.getProject(Workspace.BNDDIR);
         if (!cnfProject.exists())
-            cnfProject = eclipseWorkspace.getProject("cnf");
+            cnfProject = eclipseWorkspace.getProject(Workspace.CNFDIR);
 
         if (cnfProject.exists()) {
             if (!cnfProject.isOpen())
@@ -265,80 +287,55 @@ public class Central implements IStartupParticipant {
             return cnfProject.getLocation().toFile().getParentFile();
         }
 
-        // Have to assume that the eclipse workspace == the bnd workspace,
-        // and cnf hasn't been imported yet.
-        return eclipseWorkspace.getLocation().toFile();
+        return null;
+    }
+
+    public static boolean hasWorkspaceDirectory() {
+        try {
+            return getWorkspaceDirectory() != null;
+        } catch (CoreException e) {
+            return false;
+        }
     }
 
     private static void addCnfChangeListener(final Workspace workspace) {
         ResourcesPlugin.getWorkspace().addResourceChangeListener(new IResourceChangeListener() {
-
             @Override
             public void resourceChanged(IResourceChangeEvent event) {
-                if (event.getType() != IResourceChangeEvent.POST_CHANGE)
+                if (Central.getInstance() == null) { // plugin is not active
                     return;
-
+                }
+                if (event.getType() != IResourceChangeEvent.POST_CHANGE) {
+                    return;
+                }
                 IResourceDelta rootDelta = event.getDelta();
-                if (isCnfChanged(rootDelta)) {
+                if (isCnfChanged(workspace, rootDelta)) {
+                    logger.logInfo("cnf changed; refreshing workspace", null);
                     workspace.refresh();
                 }
             }
         });
     }
 
-    private static boolean isCnfChanged(IResourceDelta delta) {
-
-        final AtomicBoolean result = new AtomicBoolean(false);
+    private static boolean isCnfChanged(Workspace workspace, IResourceDelta rootDelta) {
         try {
-            delta.accept(new IResourceDeltaVisitor() {
-                @Override
-                public boolean visit(IResourceDelta delta) throws CoreException {
-                    try {
-
-                        if (!isChangeDelta(delta))
-                            return false;
-
-                        IResource resource = delta.getResource();
-                        if (resource.getType() == IResource.ROOT || resource.getType() == IResource.PROJECT && resource.getName().equals(Workspace.CNFDIR))
-                            return true;
-
-                        if (resource.getType() == IResource.PROJECT)
-                            return false;
-
-                        if (resource.getType() == IResource.FOLDER && resource.getName().equals("ext")) {
-                            result.set(true);
-                            return false;
-                        }
-
-                        if (resource.getType() == IResource.FILE) {
-                            if (Workspace.BUILDFILE.equals(resource.getName())) {
-                                result.set(true);
-                                return false;
-                            }
-                            // Check files included by the -include directive in build.bnd
-                            List<File> includedFiles = getWorkspace().getIncluded();
-                            if (includedFiles == null) {
-                                return false;
-                            }
-                            for (File includedFile : includedFiles) {
-                                IPath location = resource.getLocation();
-                                if (location != null && includedFile.equals(location.toFile())) {
-                                    result.set(true);
-                                    return false;
-                                }
-                            }
-                        }
+            IPath path = toPath(workspace.getPropertiesFile());
+            if (path != null && rootDelta.findMember(path) != null) {
+                return true;
+            }
+            List<File> includedFiles = workspace.getIncluded();
+            if (includedFiles != null) {
+                for (File includedFile : includedFiles) {
+                    path = toPath(includedFile);
+                    if (path != null && rootDelta.findMember(path) != null) {
                         return true;
-                    } catch (Exception e) {
-                        throw new CoreException(new Status(Status.ERROR, BndtoolsConstants.CORE_PLUGIN_ID, "During checking project changes", e));
                     }
                 }
-
-            });
-        } catch (CoreException e) {
+            }
+        } catch (Exception e) {
             logger.logError("Central.isCnfChanged() failed", e);
         }
-        return result.get();
+        return false;
     }
 
     public static boolean isChangeDelta(IResourceDelta delta) {
@@ -436,10 +433,16 @@ public class Central implements IStartupParticipant {
         List<File> refreshedFiles = new ArrayList<File>();
         List<Refreshable> rps = getWorkspace().getPlugins(Refreshable.class);
         boolean changed = false;
+        boolean repoChanged = false;
         for (Refreshable rp : rps) {
             if (rp.refresh()) {
                 changed = true;
-                refreshedFiles.add(rp.getRoot());
+                File root = rp.getRoot();
+                if (root != null)
+                    refreshedFiles.add(root);
+                if (rp instanceof RepositoryPlugin) {
+                    repoChanged = true;
+                }
             }
         }
 
@@ -462,6 +465,9 @@ public class Central implements IStartupParticipant {
                         l.modelChanged(p);
                 }
 
+                if (repoChanged) {
+                    repositoriesViewRefresher.repositoriesRefreshed();
+                }
             } catch (Exception e) {
                 e.printStackTrace();
                 throw new RuntimeException(e);
@@ -477,6 +483,9 @@ public class Central implements IStartupParticipant {
                 p.setChanged();
                 for (ModelListener l : getInstance().listeners)
                     l.modelChanged(p);
+            }
+            if (plugin instanceof RepositoryPlugin) {
+                repositoriesViewRefresher.repositoryRefreshed((RepositoryPlugin) plugin);
             }
         }
     }
@@ -517,11 +526,7 @@ public class Central implements IStartupParticipant {
     }
 
     public static Project getProject(File projectDir) throws Exception {
-        File projectDirAbsolute = projectDir.getAbsoluteFile();
-        assert projectDirAbsolute.isDirectory();
-
-        Workspace ws = getWorkspace();
-        return ws.getProject(projectDir.getName());
+        return getWorkspace().getProjectFromFile(projectDir);
     }
 
     public static Project getProject(IProject p) throws Exception {

@@ -1,7 +1,6 @@
 package bndtools.central;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -63,13 +62,13 @@ public class WorkspaceR5Repository extends BaseRepository {
     void setupProjects() throws Exception {
         IProject[] projects = ResourcesPlugin.getWorkspace().getRoot().getProjects();
         for (IProject project : projects) {
-            Project model = Central.getProject(project.getLocation().toFile());
+            Project model = Central.getProject(project);
             if (model != null) {
                 File targetDir = getTarget(model);
                 if (targetDir != null) {
                     File indexFile = new File(targetDir, ".index");
                     if (indexFile.isFile()) {
-                        loadProjectIndex(project, new FileInputStream(indexFile), project.getLocation().toFile().toURI());
+                        loadProjectIndex(project, IO.stream(indexFile), project.getLocation().toFile().toURI());
                     }
                 }
             }

@@ -1,7 +1,6 @@
 package org.bndtools.core.templating.repobased;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -26,6 +25,7 @@ import org.bndtools.templating.ResourceMap;
 import org.bndtools.templating.Template;
 import org.bndtools.templating.TemplateEngine;
 import org.bndtools.templating.util.AttributeDefinitionImpl;
+import org.bndtools.templating.util.CompositeOCD;
 import org.bndtools.templating.util.ObjectClassDefinitionImpl;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.IStatus;
@@ -150,6 +150,8 @@ public class CapabilityBasedTemplate implements Template {
     public ObjectClassDefinition getMetadata(IProgressMonitor monitor) throws Exception {
         String resourceId = ResourceUtils.getIdentityCapability(capability.getResource()).osgi_identity();
 
+        final CompositeOCD compositeOcd = new CompositeOCD(name, description, null);
+
         if (metaTypePath != null) {
             try (JarFile bundleJarFile = new JarFile(fetchBundle())) {
                 JarEntry metaTypeEntry = bundleJarFile.getJarEntry(metaTypePath);
@@ -163,16 +165,20 @@ public class CapabilityBasedTemplate implements Template {
                             @SuppressWarnings("unchecked")
                             Entry<String,OCD> entry = (Entry<String,OCD>) ocdMap.entrySet().iterator().next();
                             // There is exactly one OCD, but if the capability specified the 'ocd' property then it must match.
-                            if (ocdRef == null || ocdRef.equals(entry.getKey()))
-                                return new FelixOCDAdapter(entry.getValue());
-                            log(IStatus.WARNING, String.format("MetaType entry '%s' from resource '%s' did not contain an Object Class Definition with id '%s'", metaTypePath, resourceId, ocdRef), null);
+                            if (ocdRef == null || ocdRef.equals(entry.getKey())) {
+                                compositeOcd.addDelegate(new FelixOCDAdapter(entry.getValue()));
+                            } else {
+                                log(IStatus.WARNING, String.format("MetaType entry '%s' from resource '%s' did not contain an Object Class Definition with id '%s'", metaTypePath, resourceId, ocdRef), null);
+                            }
                         } else {
                             // There are multiple OCDs in the MetaType record, so the capability must have specified the 'ocd' property.
                             if (ocdRef != null) {
-                                OCD ocd = (OCD) ocdMap.get(ocdRef);
-                                if (ocd != null)
-                                    return new FelixOCDAdapter(ocd);
-                                log(IStatus.WARNING, String.format("MetaType entry '%s' from resource '%s' did not contain an Object Class Definition with id '%s'", metaTypePath, resourceId, ocdRef), null);
+                                OCD felixOcd = (OCD) ocdMap.get(ocdRef);
+                                if (felixOcd != null) {
+                                    compositeOcd.addDelegate(new FelixOCDAdapter(felixOcd));
+                                } else {
+                                    log(IStatus.WARNING, String.format("MetaType entry '%s' from resource '%s' did not contain an Object Class Definition with id '%s'", metaTypePath, resourceId, ocdRef), null);
+                                }
                             } else {
                                 log(IStatus.WARNING, String.format("MetaType entry '%s' from resource '%s' contains multiple Object Class Definitions, and no 'ocd' property was specified.", metaTypePath, resourceId), null);
                             }
@@ -182,7 +188,8 @@ public class CapabilityBasedTemplate implements Template {
             }
         }
 
-        // No MetaType could be loaded, so build one automatically from the parameters used in the templates.
+        // Add attribute definitions for any parameter names found in the templates and not already
+        // loaded from the Metatype XML.
         ObjectClassDefinitionImpl ocdImpl = new ObjectClassDefinitionImpl(name, description, null);
         ResourceMap inputs = getInputSources();
         Map<String,String> params = engine.getTemplateParameters(inputs, monitor);
@@ -194,7 +201,9 @@ public class CapabilityBasedTemplate implements Template {
                 });
             ocdImpl.addAttribute(ad, true);
         }
-        return ocdImpl;
+        compositeOcd.addDelegate(ocdImpl);
+
+        return compositeOcd;
     }
 
     @Override
@@ -231,7 +240,7 @@ public class CapabilityBasedTemplate implements Template {
         File bundleFile = fetchBundle();
 
         _inputResources = new ResourceMap();
-        try (JarInputStream in = new JarInputStream(new FileInputStream(bundleFile))) {
+        try (JarInputStream in = new JarInputStream(IO.stream(bundleFile))) {
             JarEntry jarEntry = in.getNextJarEntry();
             while (jarEntry != null) {
                 String entryPath = jarEntry.getName().trim();

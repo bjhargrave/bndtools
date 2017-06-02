@@ -8,7 +8,7 @@ import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.eclipse.osgi.framework.internal.core.Constants;
+import org.osgi.framework.Constants;
 import org.osgi.framework.Version;
 import org.osgi.framework.namespace.BundleNamespace;
 import org.osgi.framework.namespace.ExecutionEnvironmentNamespace;
@@ -42,7 +42,7 @@ public final class ResourceUtils {
             caps = filtered;
 
             if (caps.size() > 1)
-                throw new IllegalArgumentException("Resource is has multiple identity capabilities: " + ids);
+                throw new IllegalArgumentException("Resource has multiple identity capabilities: " + ids);
         }
         return caps.get(0);
     }

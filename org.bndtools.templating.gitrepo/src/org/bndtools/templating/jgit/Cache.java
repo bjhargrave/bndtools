@@ -22,7 +22,7 @@ public class Cache {
             if (cachedTag == null) {
                 // Not previously cached
                 TaggedData td = client.connectTagged(uri.toURL());
-                if (td == null)
+                if (td == null || td.isNotFound())
                     throw new FileNotFoundException("Not found");
                 data = IO.read(td.getInputStream());
                 if (td.getTag() != null)
@@ -30,7 +30,7 @@ public class Cache {
             } else {
                 // Previously cached with an ETag
                 TaggedData td = client.connectTagged(uri.toURL(), cachedTag.getFirst());
-                if (td == null)
+                if (td == null || td.isNotFound())
                     throw new FileNotFoundException("Not found");
                 if (td.getResponseCode() == 304) {
                     // unchanged
@@ -40,7 +40,7 @@ public class Cache {
                     data = IO.read(td.getInputStream());
                     if (td.getTag() == null) {
                         // server now not giving an etag -> remove from cache
-                        cache.remove(td.getTag());
+                        cache.remove(uri);
                     } else {
                         // replace cache entry with new tag
                         cache.put(uri, new Pair<String,byte[]>(td.getTag(), data));

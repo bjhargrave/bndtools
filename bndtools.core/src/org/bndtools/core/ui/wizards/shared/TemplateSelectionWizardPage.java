@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 
+import org.bndtools.templating.Category;
 import org.bndtools.templating.Template;
 import org.bndtools.templating.TemplateLoader;
 import org.bndtools.utils.jface.ProgressRunner;
@@ -59,6 +60,7 @@ import org.eclipse.ui.forms.events.HyperlinkEvent;
 import org.eclipse.ui.forms.widgets.FormText;
 import org.eclipse.ui.forms.widgets.Hyperlink;
 import org.eclipse.ui.forms.widgets.ScrolledFormText;
+import org.eclipse.ui.plugin.AbstractUIPlugin;
 import org.osgi.framework.BundleContext;
 import org.osgi.framework.Constants;
 import org.osgi.framework.FrameworkUtil;
@@ -66,6 +68,7 @@ import org.osgi.framework.InvalidSyntaxException;
 import org.osgi.framework.ServiceReference;
 import org.osgi.service.component.ComponentConstants;
 import org.osgi.util.promise.Promise;
+
 import aQute.bnd.osgi.Processor;
 import aQute.lib.io.IO;
 import aQute.libg.tuple.Pair;
@@ -91,6 +94,7 @@ public class TemplateSelectionWizardPage extends WizardPage {
     private final LatestTemplateFilter latestFilter = new LatestTemplateFilter();
     private Button btnLatestOnly;
     private ScrolledFormText txtDescription;
+    private Image defaultTemplateImage;
 
     private Template selected = null;
 
@@ -146,17 +150,23 @@ public class TemplateSelectionWizardPage extends WizardPage {
 
         composite.setLayout(new GridLayout(1, false));
 
+        Control headerControl = createHeaderControl(composite);
+        if (headerControl != null)
+            headerControl.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, false));
+
         new Label(composite, SWT.NONE).setText("Select Template:");
 
         tree = new Tree(composite, SWT.BORDER | SWT.FULL_SELECTION);
         gd = new GridData(SWT.FILL, SWT.FILL, true, true);
-        gd.heightHint = 100;
+        gd.heightHint = 150;
         tree.setLayoutData(gd);
+
+        defaultTemplateImage = AbstractUIPlugin.imageDescriptorFromPlugin(Plugin.PLUGIN_ID, "icons/template.gif").createImage(parent.getDisplay());
 
         viewer = new TreeViewer(tree);
         contentProvider = new RepoTemplateContentProvider(false);
         viewer.setContentProvider(contentProvider);
-        viewer.setLabelProvider(new RepoTemplateLabelProvider(loadedImages));
+        viewer.setLabelProvider(new RepoTemplateLabelProvider(loadedImages, defaultTemplateImage));
         viewer.addFilter(latestFilter);
         setTemplates(emptyTemplate != null ? Collections.singletonList(emptyTemplate) : Collections.<Template> emptyList());
 
@@ -180,14 +190,14 @@ public class TemplateSelectionWizardPage extends WizardPage {
         formText.setFont("italic", JFaceResources.getFontRegistry().getItalic(""));
 
         GridData gd_cmpDescription = new GridData(SWT.FILL, SWT.FILL, true, true);
-        gd_cmpDescription.heightHint = 100;
+        gd_cmpDescription.heightHint = 25;
         cmpDescription.setLayoutData(gd_cmpDescription);
 
         GridLayout layout_cmpDescription = new GridLayout(1, false);
         cmpDescription.setLayout(layout_cmpDescription);
 
         GridData gd_txtDescription = new GridData(SWT.FILL, SWT.FILL, true, true, 1, 1);
-        gd_txtDescription.heightHint = 100;
+        gd_txtDescription.heightHint = 25;
         txtDescription.setLayoutData(gd_txtDescription);
 
         Hyperlink linkRetina = new Hyperlink(composite, SWT.NONE);
@@ -246,6 +256,13 @@ public class TemplateSelectionWizardPage extends WizardPage {
                 }
             }
         });
+    }
+
+    /**
+     * Can be overridden to provide a control that will be placed at the top of the page.
+     */
+    protected Control createHeaderControl(@SuppressWarnings("unused") Composite parent) {
+        return null;
     }
 
     private class LoadTemplatesJob implements IRunnableWithProgress {
@@ -358,6 +375,9 @@ public class TemplateSelectionWizardPage extends WizardPage {
     public void dispose() {
         super.dispose();
 
+        if (!defaultTemplateImage.isDisposed())
+            defaultTemplateImage.dispose();
+
         for (Entry<Template,Image> entry : loadedImages.entrySet()) {
             Image img = entry.getValue();
             if (!img.isDisposed())
@@ -377,8 +397,30 @@ public class TemplateSelectionWizardPage extends WizardPage {
         viewer.setInput(templates);
         viewer.expandAll();
 
-        Template first = contentProvider.getFirstTemplate();
-        viewer.setSelection(first != null ? new StructuredSelection(first) : StructuredSelection.EMPTY, true);
+        Template templateToSelect = null;
+
+        if (viewer.getFilters().length == 0) {
+            templateToSelect = contentProvider.getFirstTemplate();
+        } else {
+            for (Object element : contentProvider.getElements(null)) {
+                if (element instanceof Category) {
+                    Object[] filteredTemplates = latestFilter.filter(viewer, element, contentProvider.getChildren(element));
+                    if (filteredTemplates.length > 0) {
+                        templateToSelect = (Template) filteredTemplates[0];
+                        break;
+                    }
+                } else {
+                    templateToSelect = (Template) element;
+                    break;
+                }
+            }
+        }
+
+        if (templateToSelect == null) {
+            return;
+        }
+
+        viewer.setSelection(new StructuredSelection(templateToSelect));
     }
 
     public void setTemplate(final Template template) {

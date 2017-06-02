@@ -14,7 +14,6 @@ import java.util.concurrent.TimeoutException;
 import org.bndtools.api.BndtoolsConstants;
 import org.bndtools.api.ILogger;
 import org.bndtools.api.Logger;
-import org.bndtools.build.api.BuildErrorDetailsHandler;
 import org.bndtools.builder.classpath.BndContainerInitializer;
 import org.bndtools.builder.decorator.ui.PackageDecorator;
 import org.bndtools.utils.workspace.WorkspaceUtils;
@@ -116,19 +115,9 @@ public class BndtoolsBuilder extends IncrementalProjectBuilder {
 
             if (model == null) {
                 try {
-                    model = Central.getProject(myProject.getLocation().toFile());
+                    model = Central.getProject(myProject);
                 } catch (Exception e) {
                     markers.deleteMarkers("*");
-
-                    // Add a marker to the bnd.bnd file if available, or the project if not.
-                    IResource markerTarget = myProject.getFile(Project.BNDFILE);
-                    if (markerTarget == null || markerTarget.getType() != IResource.FILE || !markerTarget.exists())
-                        markerTarget = myProject;
-                    IMarker marker = markerTarget.createMarker(BndtoolsConstants.MARKER_BND_MISSING_WORKSPACE);
-                    marker.setAttribute(IMarker.SEVERITY, IMarker.SEVERITY_ERROR);
-                    marker.setAttribute(IMarker.MESSAGE, "Missing Bnd Workspace. Create a new workspace with the 'New Bnd OSGi Workspace' wizard.");
-                    marker.setAttribute(BuildErrorDetailsHandler.PROP_HAS_RESOLUTIONS, true);
-                    marker.setAttribute("$bndType", BndtoolsConstants.MARKER_BND_MISSING_WORKSPACE);
                 }
                 if (model == null)
                     return noreport();
@@ -245,6 +234,8 @@ public class BndtoolsBuilder extends IncrementalProjectBuilder {
                             return noreport();
                         }
 
+                        WorkingSetTracker.doWorkingSets(model, myProject);
+
                         if (model.isNoBundles()) {
                             buildLog.basic("-nobundles was set, so no build");
                             buildLog.setFiles(0);
@@ -268,7 +259,6 @@ public class BndtoolsBuilder extends IncrementalProjectBuilder {
                             model.warning("Project %s has blocking errors but requested to continue anyway", myProject.getName());
                         }
 
-                        deleteBuildFiles(model);
                         Central.invalidateIndex();
 
                         File buildFiles[] = model.build();
@@ -280,6 +270,8 @@ public class BndtoolsBuilder extends IncrementalProjectBuilder {
 
                         // We can now decorate based on the build we just did.
                         PackageDecorator.updateDecoration(myProject, model);
+
+                        ComponentMarker.updateComponentMarkers(myProject, model);
 
                         if (model.isCnf()) {
                             model.getWorkspace().refresh(); // this is for bnd plugins built in cnf
@@ -323,9 +315,10 @@ public class BndtoolsBuilder extends IncrementalProjectBuilder {
     protected void clean(IProgressMonitor monitor) throws CoreException {
         try {
             IProject myProject = getProject();
+
             final Project model;
             try {
-                model = Central.getProject(myProject.getLocation().toFile());
+                model = Central.getProject(myProject);
             } catch (Exception e) {
                 MarkerSupport markers = new MarkerSupport(myProject);
                 markers.deleteMarkers("*");

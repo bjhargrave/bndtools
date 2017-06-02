@@ -1,9 +1,7 @@
 package org.bndtools.builder.indexer;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URI;
 import java.text.MessageFormat;
@@ -67,9 +65,8 @@ public class BuiltBundleIndexer extends AbstractBuildListener {
 
         // Generate the index file
         File indexFile;
-        OutputStream output = null;
         try {
-            Project model = Central.getProject(project.getLocation().toFile());
+            Project model = Central.getProject(project);
             File target = model.getTarget();
             indexFile = new File(target, INDEX_FILENAME);
 
@@ -84,6 +81,7 @@ public class BuiltBundleIndexer extends AbstractBuildListener {
 
             // Use an analyzer to add a marker capability to workspace resources
             indexer.addAnalyzer(new ResourceAnalyzer() {
+                @Override
                 public void analyzeResource(Resource resource, List<Capability> capabilities, List<Requirement> requirements) throws Exception {
                     Capability cap = new Builder().setNamespace("bndtools.workspace").addAttribute("bndtools.workspace", workspaceRootUri.toString()).addAttribute("project.path", project.getFullPath().toString()).buildCapability();
                     capabilities.add(cap);
@@ -95,35 +93,23 @@ public class BuiltBundleIndexer extends AbstractBuildListener {
             config.put(ResourceIndexer.ROOT_URL, project.getLocation().toFile().toURI().toString());
             config.put(ResourceIndexer.PRETTY, "true");
 
-            output = new FileOutputStream(indexFile);
-            indexer.index(files, output, config);
-            IO.close(output);
+            try (OutputStream output = IO.outputStream(indexFile)) {
+                indexer.index(files, output, config);
+            }
             indexPath.refreshLocal(IResource.DEPTH_ZERO, null);
             if (indexPath.exists())
                 indexPath.setDerived(true, null);
         } catch (Exception e) {
             logger.logError(MessageFormat.format("Failed to generate index file for bundles in project {0}.", project.getName()), e);
             return;
-        } finally {
-            IO.close(output);
         }
 
         // Parse the index and add to the workspace repository
-        FileInputStream input = null;
-        try {
-            input = new FileInputStream(indexFile);
+        try (InputStream input = IO.stream(indexFile)) {
             WorkspaceR5Repository workspaceRepo = Central.getWorkspaceR5Repository();
             workspaceRepo.loadProjectIndex(project, input, project.getLocation().toFile().toURI());
         } catch (Exception e) {
             logger.logError("Failed to update workspace index.", e);
-        } finally {
-            if (input != null) {
-                try {
-                    input.close();
-                } catch (IOException e) {
-                    /* ignore */
-                }
-            }
         }
     }
 

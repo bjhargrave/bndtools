@@ -2,7 +2,6 @@ package bndtools.jareditor.internal;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.PrintStream;
 import java.util.Collection;
@@ -43,11 +42,13 @@ public class Printer extends Processor {
     final static int VERIFY = 1;
 
     PrintStream out = System.out;
+    OutputStreamWriter or = new OutputStreamWriter(out, Constants.DEFAULT_CHARSET);
 
     private static final String EOL = String.format("%n");
 
     public void setOut(PrintStream out) {
         this.out = out;
+        this.or = new OutputStreamWriter(out, Constants.DEFAULT_CHARSET);
     }
 
     public void doPrint(String string, int options) throws Exception {
@@ -63,8 +64,7 @@ public class Printer extends Processor {
     }
 
     private void doPrint(File file, int options) throws ZipException, IOException, Exception {
-        Jar jar = new Jar(file.getName(), file);
-        try {
+        try (Jar jar = new Jar(file.getName(), file)) {
             if ((options & VERIFY) != 0) {
                 Verifier verifier = new Verifier(jar);
                 verifier.setPedantic(isPedantic());
@@ -105,8 +105,7 @@ public class Printer extends Processor {
 
             if ((options & (USES | USEDBY)) != 0) {
                 out.println();
-                Analyzer analyzer = new Analyzer();
-                try {
+                try (Analyzer analyzer = new Analyzer()) {
                     analyzer.setPedantic(isPedantic());
                     analyzer.setJar(jar);
                     analyzer.analyze();
@@ -121,8 +120,6 @@ public class Printer extends Processor {
                         printMultiMap(usedBy);
                     }
                     analyzer.setJar((Jar) null);
-                } finally {
-                    analyzer.close();
                 }
                 out.println();
             }
@@ -166,8 +163,6 @@ public class Printer extends Processor {
                 }
                 out.println();
             }
-        } finally {
-            jar.close();
         }
     }
 
@@ -199,12 +194,12 @@ public class Printer extends Processor {
         }
     }
 
-    private <T extends Comparable< ? >> void printMultiMap(Map<T, ? extends Collection<T>> map) {
-        SortedList<Object> keys = new SortedList<Object>(map.keySet());
+    private <T extends Comparable< ? super T>> void printMultiMap(Map<T, ? extends Collection<T>> map) {
+        SortedList<T> keys = new SortedList<T>(map.keySet());
         for (Object key : keys) {
             String name = key.toString();
 
-            SortedList<Object> values = new SortedList<Object>(map.get(key));
+            SortedList<T> values = new SortedList<T>(map.get(key));
             String list = vertical(41, values);
             format(out, "%-40s %s", name, list);
         }
@@ -333,7 +328,7 @@ public class Printer extends Processor {
 
     /**
      * Print the components in this JAR.
-     * 
+     *
      * @param jar
      */
     private void printComponents(Jar jar) throws Exception {
@@ -353,14 +348,7 @@ public class Printer extends Processor {
 
             Resource r = jar.getResource(path);
             if (r != null) {
-                InputStreamReader ir = new InputStreamReader(r.openInputStream(), Constants.DEFAULT_CHARSET);
-                OutputStreamWriter or = new OutputStreamWriter(out, Constants.DEFAULT_CHARSET);
-                try {
-                    IO.copy(ir, or);
-                } finally {
-                    or.flush();
-                    ir.close();
-                }
+                IO.copy(IO.reader(r.openInputStream(), Constants.DEFAULT_CHARSET), or);
             } else {
                 out.println("  - no resource");
                 warning("No Resource found for service component: " + path);
@@ -373,7 +361,7 @@ public class Printer extends Processor {
 
     /**
      * Print the metatypes in this JAR.
-     * 
+     *
      * @param jar
      */
     private void printMetatype(Jar jar) throws Exception {
@@ -388,7 +376,7 @@ public class Printer extends Processor {
         if (map != null) {
             for (Map.Entry<String,Resource> entry : map.entrySet()) {
                 out.println(entry.getKey());
-                IO.copy(entry.getValue().openInputStream(), out);
+                IO.copy(IO.reader(entry.getValue().openInputStream(), Constants.DEFAULT_CHARSET), or);
                 out.println();
             }
             out.println();

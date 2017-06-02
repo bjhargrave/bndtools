@@ -1,39 +1,39 @@
 /*
  * Master Gradle build script
- *
- * Depends on bndPlugin property set by settings.gradle.
- * and bnd_* values from gradle.properties.
  */
 
-import aQute.bnd.build.Workspace
-import aQute.bnd.osgi.Constants
-
-/* Add bnd gradle plugin as a script dependency */
-buildscript {
-  dependencies {
-    classpath bndPlugin
-  }
-}
-
-/* Initialize the bnd workspace */
-Workspace.setDriver(Constants.BNDDRIVER_GRADLE)
-Workspace.addGestalt(Constants.GESTALT_BATCH, null)
-ext.bndWorkspace = new Workspace(rootDir, bnd_cnf)
-if (bndWorkspace == null) {
-  throw new GradleException("Unable to load workspace ${rootDir}/${bnd_cnf}")
-}
-/* Set this property in the workspace */
-bndWorkspace.setProperty('bnd_repourl', uri(bnd_repourl).toString())
-
-ext.cnf = rootProject.project(bnd_cnf)
+import aQute.lib.io.IO
 
 /* Configure the subprojects */
 subprojects {
-  def bndProject = bndWorkspace.getProject(name)
-  if (bndProject != null) {
-    plugins.apply 'biz.aQute.bnd'
-    test.testLogging {
-      exceptionFormat 'full'
+  if (plugins.hasPlugin('biz.aQute.bnd')) {
+    /* test folders are not part of jar but used by unit tests  */
+    def testfolders = ['testresources/', 'testdata/']
+    jar {
+      projectDirInputsExcludes << '.*'
+      projectDirInputsExcludes += testfolders
+    }
+    test {
+      testLogging {
+        exceptionFormat 'full'
+      }
+      inputs.files fileTree(projectDir) {
+        include testfolders
+        exclude {
+          def f = it.file
+          if (f.directory && f.list().length == 0) {
+            return true
+          }
+          try {
+            return "git check-ignore ${f}".execute().waitFor() == 0
+          } catch (Exception e) {
+            return false
+          }
+        }
+      }
+      if (System.properties['maven.repo.local']) {
+        systemProperty 'maven.repo.local', IO.getFile(rootProject.rootDir, System.properties['maven.repo.local'])
+      }
     }
   }
 }
@@ -42,6 +42,10 @@ task wrapper(type: Wrapper) {
   jarFile = rootProject.file('.gradle-wrapper/gradle-wrapper.jar')
 }
 
-task buildscriptDependencies << {
+task buildscriptDependencies {
+  doLast {
+    println "bnd_plugin: ${bnd_plugin}"
+    println "bnd_repourl: ${bnd_repourl}"
     println buildscript.configurations.classpath.asPath
+  }
 }

@@ -5,6 +5,8 @@ import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.bndtools.utils.workspace.WorkspaceUtils;
+import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
 import org.eclipse.core.resources.IResourceChangeEvent;
 import org.eclipse.core.resources.IResourceChangeListener;
@@ -12,13 +14,12 @@ import org.eclipse.core.resources.IResourceDelta;
 import org.eclipse.core.resources.IResourceDeltaVisitor;
 import org.eclipse.core.resources.IWorkspace;
 import org.eclipse.core.resources.ResourcesPlugin;
+import org.eclipse.core.resources.WorkspaceJob;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.Status;
-import org.eclipse.core.runtime.jobs.Job;
-
 import aQute.bnd.build.Workspace;
 import aQute.bnd.build.WorkspaceRepository;
 import aQute.bnd.service.RepositoryListenerPlugin;
@@ -28,6 +29,7 @@ public class WorkspaceRepositoryChangeDetector implements Closeable, IResourceCh
     private final Workspace workspace;
     private final IWorkspace iworkspace;
     private final WorkspaceRepository repository;
+    private final IProject cnfProject;
 
     private final AtomicBoolean refresh = new AtomicBoolean();
 
@@ -48,7 +50,10 @@ public class WorkspaceRepositoryChangeDetector implements Closeable, IResourceCh
                         refresh.set(true);
                     }
                     return false;
-
+                case IResource.FOLDER :
+                    if (cnfProject == null)
+                        return false;
+                    return delta.getResource().getParent().getType() == IResource.PROJECT && delta.getResource().getParent().equals(cnfProject) && delta.getResource().getName().equals("ext");
                 default :
                     return false;
                 }
@@ -86,6 +91,15 @@ public class WorkspaceRepositoryChangeDetector implements Closeable, IResourceCh
         this.workspace = workspace;
         this.repository = workspace.getWorkspaceRepository();
         this.iworkspace = ResourcesPlugin.getWorkspace();
+
+        IProject cnf = null;
+
+        try {
+            cnf = WorkspaceUtils.findCnfProject(iworkspace.getRoot(), workspace);
+        } catch (Exception ex) {}
+
+        this.cnfProject = cnf;
+
         iworkspace.addResourceChangeListener(this);
         workspace.addClose(this);
     }
@@ -107,10 +121,10 @@ public class WorkspaceRepositoryChangeDetector implements Closeable, IResourceCh
                 event.getDelta().accept(rootFolderVisitor);
 
                 if (refresh.getAndSet(false)) {
-                    Job job = new Job("Refresh Workspace Repository") {
+                    WorkspaceJob job = new WorkspaceJob("Refresh Workspace Repository") {
                         @Override
-                        protected IStatus run(IProgressMonitor monitor) {
-                            if (monitor != null)
+                        public IStatus runInWorkspace(IProgressMonitor monitor) {
+                            if (monitor == null)
                                 monitor = new NullProgressMonitor();
                             List<RepositoryListenerPlugin> plugins = workspace.getPlugins(RepositoryListenerPlugin.class);
                             monitor.beginTask("Refresh ", plugins.size());
@@ -126,8 +140,7 @@ public class WorkspaceRepositoryChangeDetector implements Closeable, IResourceCh
                             return Status.OK_STATUS;
                         }
                     };
-                    job.setPriority(Job.SHORT);
-                    job.schedule();
+                    job.schedule(500);
                 }
             }
         } catch (CoreException e) {

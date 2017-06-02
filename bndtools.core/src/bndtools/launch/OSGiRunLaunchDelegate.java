@@ -26,13 +26,19 @@ import org.eclipse.core.runtime.SubMonitor;
 import org.eclipse.debug.core.DebugPlugin;
 import org.eclipse.debug.core.ILaunch;
 import org.eclipse.debug.core.ILaunchConfiguration;
+import org.eclipse.jface.action.Action;
+import org.eclipse.jface.action.IMenuManager;
 import org.eclipse.jface.dialogs.PopupDialog;
+import org.eclipse.jface.layout.GridDataFactory;
 import org.eclipse.swt.SWT;
+import org.eclipse.swt.events.SelectionAdapter;
+import org.eclipse.swt.events.SelectionEvent;
 import org.eclipse.swt.graphics.Point;
 import org.eclipse.swt.graphics.Rectangle;
 import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Display;
+import org.eclipse.swt.widgets.Link;
 import org.eclipse.swt.widgets.Shell;
 import org.eclipse.swt.widgets.Text;
 import org.eclipse.ui.internal.Workbench;
@@ -110,18 +116,12 @@ public class OSGiRunLaunchDelegate extends AbstractOSGiLaunchDelegate {
 
     private static String validateClasspath(Collection<String> classpath) {
         for (String fileName : classpath) {
-            Jar jar = null;
-            try {
-                jar = new Jar(new File(fileName));
+            try (Jar jar = new Jar(new File(fileName))) {
                 boolean frameworkExists = jar.exists("META-INF/services/" + FrameworkFactory.class.getName());
                 if (frameworkExists)
                     return fileName;
             } catch (IOException e) {
                 e.printStackTrace();
-            } finally {
-                if (jar != null) {
-                    jar.close();
-                }
             }
         }
         return null;
@@ -134,7 +134,7 @@ public class OSGiRunLaunchDelegate extends AbstractOSGiLaunchDelegate {
         try {
             boolean dynamic = configuration.getAttribute(LaunchConstants.ATTR_DYNAMIC_BUNDLES, LaunchConstants.DEFAULT_DYNAMIC_BUNDLES);
             if (dynamic)
-                registerLaunchPropertiesRegenerator(model, launch);
+                registerLaunchPropertiesRegenerator(run, launch);
         } catch (Exception e) {
             throw new CoreException(new Status(IStatus.ERROR, Plugin.PLUGIN_ID, 0, "Error obtaining OSGi project launcher.", e));
         }
@@ -148,6 +148,35 @@ public class OSGiRunLaunchDelegate extends AbstractOSGiLaunchDelegate {
                     protected Control createDialogArea(Composite parent) {
                         textArea = new Text(parent, SWT.LEAD | SWT.READ_ONLY | SWT.WRAP);
                         return textArea;
+                    }
+
+                    @Override
+                    protected void fillDialogMenu(IMenuManager dialogMenu) {
+                        super.fillDialogMenu(dialogMenu);
+
+                        Action dismissAction = new Action("Close") {
+                            @Override
+                            public void run() {
+                                close();
+                            }
+                        };
+
+                        dialogMenu.add(dismissAction);
+                    }
+
+                    @Override
+                    protected Control createInfoTextArea(Composite parent) {
+                        Link link = new Link(parent, SWT.NONE);
+                        link.setText("<a>Dismiss\u2026</a> ");
+                        link.addSelectionListener(new SelectionAdapter() {
+                            @Override
+                            public void widgetSelected(SelectionEvent e) {
+                                close();
+                            }
+                        });
+
+                        GridDataFactory.fillDefaults().grab(true, false).align(SWT.END, SWT.FILL).applyTo(link);
+                        return link;
                     }
 
                     @Override

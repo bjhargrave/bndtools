@@ -69,8 +69,8 @@ import org.eclipse.ui.progress.UIJob;
 import org.eclipse.ui.texteditor.IDocumentProvider;
 import org.eclipse.ui.texteditor.IElementStateListener;
 import org.eclipse.ui.views.contentoutline.IContentOutlinePage;
-import org.osgi.util.promise.Deferred;
 import org.osgi.util.promise.Promise;
+import org.osgi.util.promise.Promises;
 import org.osgi.util.promise.Success;
 
 import aQute.bnd.build.Project;
@@ -78,6 +78,7 @@ import aQute.bnd.build.Run;
 import aQute.bnd.build.Workspace;
 import aQute.bnd.build.model.BndEditModel;
 import aQute.bnd.properties.BadLocationException;
+import aQute.lib.exceptions.Exceptions;
 import bndtools.BndConstants;
 import bndtools.Plugin;
 import bndtools.central.Central;
@@ -96,7 +97,7 @@ import bndtools.types.Pair;
 public class BndEditor extends ExtendedFormEditor implements IResourceChangeListener {
 
     private static final ILogger logger = Logger.getLogger(BndEditor.class);
-    private static final String SYNC_MESSAGE = "Workspace is loading, please wait...";
+    public static final String SYNC_MESSAGE = "Workspace is loading, please wait...";
 
     public static final String WORKSPACE_EDITOR = "bndtools.bndWorkspaceConfigEditor";
 
@@ -368,12 +369,14 @@ public class BndEditor extends ExtendedFormEditor implements IResourceChangeList
 
         showHighestPriorityPage();
 
-        for (int i = 0; i < getPageCount(); i++) {
-            Control control = getControl(i);
+        if (!Central.isWorkspaceInited()) {
+            IFormPage activePage = getActivePageInstance();
 
-            if (control instanceof ScrolledForm) {
-                ScrolledForm form = (ScrolledForm) control;
-                form.setMessage(SYNC_MESSAGE, IMessageProvider.WARNING);
+            if (activePage != null && activePage.getManagedForm() != null) {
+                ScrolledForm form = activePage.getManagedForm().getForm();
+                if (form.getMessage() == null) {
+                    form.setMessage(SYNC_MESSAGE, IMessageProvider.WARNING);
+                }
             }
         }
     }
@@ -435,49 +438,57 @@ public class BndEditor extends ExtendedFormEditor implements IResourceChangeList
     @Override
     public void init(IEditorSite site, IEditorInput input) throws PartInitException {
         super.init(site, input);
+        try {
 
-        // Work out our input file and subscribe to resource changes
-        final String resourceName;
-        IResource inputResource = ResourceUtil.getResource(input);
-        if (inputResource != null) {
-            inputResource.getWorkspace().addResourceChangeListener(this);
-            resourceName = inputResource.getName();
-            inputFile = inputResource.getLocation().toFile();
-        } else {
-            IStorage storage = (IStorage) input.getAdapter(IStorage.class);
-            if (storage != null) {
-                resourceName = storage.getName();
+            // Work out our input file and subscribe to resource changes
+            final String resourceName;
+            IResource inputResource = ResourceUtil.getResource(input);
+            if (inputResource != null) {
+                inputResource.getWorkspace().addResourceChangeListener(this);
+                resourceName = inputResource.getName();
+                inputFile = inputResource.getLocation().toFile();
             } else {
-                resourceName = input.getName();
+                IStorage storage = (IStorage) input.getAdapter(IStorage.class);
+                if (storage != null) {
+                    resourceName = storage.getName();
+                } else {
+                    resourceName = input.getName();
+                }
+                inputFile = null;
             }
-            inputFile = null;
-        }
-        model.setBndResourceName(resourceName);
+            model.setBndResourceName(resourceName);
 
-        // Initialise pages and title
-        initPages(site, input);
-        setSourcePage(sourcePage);
-        setPartNameForInput(input);
-        sourcePage.getDocumentProvider().addElementStateListener(new ElementStateListener());
+            // Initialise pages and title
+            initPages(site, input);
+            setSourcePage(sourcePage);
+            setPartNameForInput(input);
 
-        Central.onWorkspaceInit(new Success<Workspace,Void>() {
-            @Override
-            public Promise<Void> call(Promise<Workspace> resolved) throws Exception {
-                final Deferred<Void> completion = new Deferred<>();
-                Display.getDefault().asyncExec(new Runnable() {
-                    @Override
-                    public void run() {
-                        try {
-                            loadEditModel();
-                            completion.resolve(null);
-                        } catch (Exception e) {
-                            completion.fail(e);
+            IDocumentProvider docProvider = sourcePage.getDocumentProvider();
+            // #1625: Ensure the IDocumentProvider is not null.
+            if (docProvider != null) {
+                docProvider.addElementStateListener(new ElementStateListener());
+                if (!Central.hasWorkspaceDirectory()) { // default ws will be created we can load immediately
+                    loadEditModel();
+                } else { // a real ws will be resolved so we need to load async
+                    Central.onWorkspaceInit(new Success<Workspace,Void>() {
+                        @Override
+                        public Promise<Void> call(Promise<Workspace> resolved) throws Exception {
+                            try {
+                                loadEditModel();
+                                return Promises.resolved(null);
+                            } catch (Exception e) {
+                                logger.logError("Failed to load edit model", e);
+                                return Promises.failed(e);
+                            }
                         }
-                    }
-                });
-                return completion.getPromise();
+                    });
+                }
+
             }
-        });
+
+        } catch (Exception e1) {
+            throw Exceptions.duck(e1);
+        }
     }
 
     private void loadEditModel() throws Exception {
@@ -488,21 +499,35 @@ public class BndEditor extends ExtendedFormEditor implements IResourceChangeList
         model.setProject(bndProject);
 
         // Load content into the edit model
-        IDocument document = sourcePage.getDocumentProvider().getDocument(getEditorInput());
-        model.loadFrom(new IDocumentWrapper(document));
-        model.setBndResource(inputFile);
+        Display.getDefault().asyncExec(new Runnable() {
+            @Override
+            public void run() {
+                final IDocumentProvider docProvider = sourcePage.getDocumentProvider();
+                // #1625: Ensure the IDocumentProvider is not null.
+                if (docProvider != null) {
+                    IDocument document = docProvider.getDocument(getEditorInput());
+                    try {
+                        model.loadFrom(new IDocumentWrapper(document));
+                        model.setBndResource(inputFile);
+                    } catch (IOException e) {
+                        logger.logError("Unable to load edit model", e);
+                    }
 
-        for (int i = 0; i < getPageCount(); i++) {
-            Control control = getControl(i);
+                    for (int i = 0; i < getPageCount(); i++) {
+                        Control control = getControl(i);
 
-            if (control instanceof ScrolledForm) {
-                ScrolledForm form = (ScrolledForm) control;
+                        if (control instanceof ScrolledForm) {
+                            ScrolledForm form = (ScrolledForm) control;
 
-                if (SYNC_MESSAGE.equals(form.getMessage())) {
-                    form.setMessage(null, IMessageProvider.NONE);
+                            if (SYNC_MESSAGE.equals(form.getMessage())) {
+                                form.setMessage(null, IMessageProvider.NONE);
+                            }
+                        }
+                    }
                 }
             }
-        }
+        });
+
     }
 
     private void initPages(IEditorSite site, IEditorInput input) throws PartInitException {
@@ -616,18 +641,21 @@ public class BndEditor extends ExtendedFormEditor implements IResourceChangeList
         else if ((delta.getKind() & IResourceDelta.CHANGED) > 0 && (delta.getFlags() & IResourceDelta.CONTENT) > 0) {
             if (!saving.get()) {
                 final IDocumentProvider docProvider = sourcePage.getDocumentProvider();
-                final IDocument document = docProvider.getDocument(getEditorInput());
-                SWTConcurrencyUtil.execForControl(getEditorSite().getShell(), true, new Runnable() {
-                    @Override
-                    public void run() {
-                        try {
-                            model.loadFrom(new IDocumentWrapper(document));
-                            updateIncludedPages();
-                        } catch (IOException e) {
-                            logger.logError("Failed to reload document", e);
+                // #1625: Ensure the IDocumentProvider is not null.
+                if (docProvider != null) {
+                    final IDocument document = docProvider.getDocument(getEditorInput());
+                    SWTConcurrencyUtil.execForControl(getEditorSite().getShell(), true, new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                model.loadFrom(new IDocumentWrapper(document));
+                                updateIncludedPages();
+                            } catch (IOException e) {
+                                logger.logError("Failed to reload document", e);
+                            }
                         }
-                    }
-                });
+                    });
+                }
             }
         }
     }
@@ -660,16 +688,19 @@ public class BndEditor extends ExtendedFormEditor implements IResourceChangeList
         public void elementContentReplaced(Object element) {
             try {
                 IDocumentProvider docProvider = sourcePage.getDocumentProvider();
-                IDocumentWrapper idoc = new IDocumentWrapper(docProvider.getDocument(element));
-                if (!saving.get()) {
-                    model.loadFrom(idoc);
-                } else {
-                    if (savedString != null) {
-                        logger.logInfo("Putting back content that we almost lost!", null);
-                        try {
-                            idoc.replace(0, idoc.getLength(), savedString);
-                        } catch (BadLocationException e) {
-                            e.printStackTrace();
+                // #1625: Ensure the IDocumentProvider is not null.
+                if (docProvider != null) {
+                    IDocumentWrapper idoc = new IDocumentWrapper(docProvider.getDocument(element));
+                    if (!saving.get()) {
+                        model.loadFrom(idoc);
+                    } else {
+                        if (savedString != null) {
+                            logger.logInfo("Putting back content that we almost lost!", null);
+                            try {
+                                idoc.replace(0, idoc.getLength(), savedString);
+                            } catch (BadLocationException e) {
+                                e.printStackTrace();
+                            }
                         }
                     }
                 }
@@ -691,7 +722,10 @@ public class BndEditor extends ExtendedFormEditor implements IResourceChangeList
             // in elementContentReplaced
             if (saving.get()) {
                 logger.logInfo("Content about to be replaced... Save it.", null);
-                savedString = new IDocumentWrapper(sourcePage.getDocumentProvider().getDocument(element)).get();
+                IDocumentProvider docProvider = sourcePage.getDocumentProvider();
+                // #1625: Ensure the IDocumentProvider is not null.
+                if (docProvider != null)
+                    savedString = new IDocumentWrapper(docProvider.getDocument(element)).get();
             }
         }
     }

@@ -3,7 +3,6 @@ package bndtools.wizards.workspace;
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.lang.reflect.InvocationTargetException;
 import java.nio.file.Files;
@@ -23,6 +22,7 @@ import org.eclipse.core.resources.IWorkspace;
 import org.eclipse.core.resources.IWorkspaceRunnable;
 import org.eclipse.core.resources.IncrementalProjectBuilder;
 import org.eclipse.core.resources.ResourcesPlugin;
+import org.eclipse.core.resources.WorkspaceJob;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.IProgressMonitor;
@@ -35,16 +35,17 @@ import org.eclipse.jface.dialogs.MessageDialog;
 import org.eclipse.jface.operation.IRunnableWithProgress;
 import org.eclipse.jface.viewers.IStructuredSelection;
 import org.eclipse.jface.wizard.Wizard;
+import org.eclipse.ui.INewWizard;
 import org.eclipse.ui.IPerspectiveDescriptor;
 import org.eclipse.ui.IWorkbench;
 import org.eclipse.ui.IWorkbenchWindow;
-import org.eclipse.ui.IWorkbenchWizard;
 
 import aQute.bnd.build.Project;
 import aQute.lib.io.IO;
 import bndtools.Plugin;
+import bndtools.central.Central;
 
-public class WorkspaceSetupWizard extends Wizard implements IWorkbenchWizard {
+public class WorkspaceSetupWizard extends Wizard implements INewWizard {
 
     private IWorkbench workbench;
 
@@ -115,8 +116,8 @@ public class WorkspaceSetupWizard extends Wizard implements IWorkbenchWizard {
                     case File :
                         File parentDir = file.getParentFile();
                         Files.createDirectories(parentDir.toPath());
-                        try (InputStream in = resource.getContent(); FileOutputStream out = new FileOutputStream(file)) {
-                            IO.copy(in, out);
+                        try (InputStream in = resource.getContent()) {
+                            IO.copy(in, file);
                         }
                         break;
                     default :
@@ -191,6 +192,18 @@ public class WorkspaceSetupWizard extends Wizard implements IWorkbenchWizard {
                     } catch (CoreException e) {
                         throw new InvocationTargetException(e);
                     }
+
+                    new WorkspaceJob("Load Repositories") {
+                        @Override
+                        public IStatus runInWorkspace(IProgressMonitor monitor) throws CoreException {
+                            try {
+                                Central.refreshPlugins();
+                            } catch (Exception e) {
+                                // There may be no workspace yet
+                            }
+                            return Status.OK_STATUS;
+                        }
+                    }.schedule();
                 }
             });
 

@@ -21,14 +21,17 @@ import java.util.Map;
 import java.util.Set;
 
 import org.bndtools.api.BndProjectResource;
+import org.bndtools.api.BndtoolsConstants;
 import org.bndtools.api.ILogger;
 import org.bndtools.api.Logger;
 import org.bndtools.api.ProjectPaths;
+import org.bndtools.build.api.BuildErrorDetailsHandler;
 import org.bndtools.headless.build.manager.api.HeadlessBuildManager;
 import org.bndtools.utils.copy.ResourceCopier;
 import org.bndtools.utils.javaproject.JavaProjectUtils;
 import org.bndtools.versioncontrol.ignores.manager.api.VersionControlIgnoresManager;
 import org.eclipse.core.resources.IFile;
+import org.eclipse.core.resources.IMarker;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
 import org.eclipse.core.resources.IWorkspaceRunnable;
@@ -190,8 +193,8 @@ abstract class AbstractNewBndProjectWizard extends JavaProjectWizard {
                                 public void run(IProgressMonitor monitor) throws CoreException {
                                     try {
                                         generateProjectContent(project, monitor, templateParams);
-                                    } catch (IOException e) {
-                                        throw new CoreException(new Status(IStatus.ERROR, Plugin.PLUGIN_ID, 0, "Error generating project content from template.", e));
+                                    } catch (Exception e) {
+                                        throw new CoreException(new Status(IStatus.ERROR, Plugin.PLUGIN_ID, 0, "Error generating project content from template", e));
                                     }
                                 }
                             };
@@ -203,15 +206,40 @@ abstract class AbstractNewBndProjectWizard extends JavaProjectWizard {
                 });
                 result = true;
             } catch (InvocationTargetException e) {
-                logger.logError("Could not initialise the project", e);
-                ErrorDialog.openError(getShell(), "Error", "", new Status(IStatus.ERROR, Plugin.PLUGIN_ID, 0, MessageFormat.format("Error creating Bnd project descriptor file ({0}).", Project.BNDFILE), e.getTargetException()));
+                Throwable targetException = e.getTargetException();
+                final IStatus status;
+                if (targetException instanceof CoreException) {
+                    status = ((CoreException) targetException).getStatus();
+                } else {
+                    status = new Status(IStatus.ERROR, Plugin.PLUGIN_ID, 0, "Error creating bnd project contents", targetException);
+                }
+                logger.logStatus(status);
+                ErrorDialog.openError(getShell(), "Error", "Error creating bnd project", status);
                 result = false;
             } catch (InterruptedException e) {
                 // Shouldn't happen
             }
 
-            // Open the bnd.bnd file in the editor
+            // get bnd.bnd file
             IFile bndFile = javaProj.getProject().getFile(Project.BNDFILE);
+
+            // check to see if we need to add marker about missing workspace
+            try {
+                if (!Central.hasWorkspaceDirectory()) {
+                    IResource markerTarget = bndFile;
+                    if (markerTarget == null || markerTarget.getType() != IResource.FILE || !markerTarget.exists())
+                        markerTarget = project;
+                    IMarker marker = markerTarget.createMarker(BndtoolsConstants.MARKER_BND_MISSING_WORKSPACE);
+                    marker.setAttribute(IMarker.SEVERITY, IMarker.SEVERITY_ERROR);
+                    marker.setAttribute(IMarker.MESSAGE, "Missing Bnd Workspace. Create a new workspace with the 'New Bnd OSGi Workspace' wizard.");
+                    marker.setAttribute(BuildErrorDetailsHandler.PROP_HAS_RESOLUTIONS, true);
+                    marker.setAttribute("$bndType", BndtoolsConstants.MARKER_BND_MISSING_WORKSPACE);
+                }
+            } catch (Exception e1) {
+                // ignore exceptions, this is best effort to help new users
+            }
+
+            // Open the bnd.bnd file in the editor
             try {
                 if (bndFile.exists())
                     IDE.openEditor(getWorkbench().getActiveWorkbenchWindow().getActivePage(), bndFile);

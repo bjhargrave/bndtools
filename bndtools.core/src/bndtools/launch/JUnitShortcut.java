@@ -1,8 +1,11 @@
 package bndtools.launch;
 
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
+import org.eclipse.core.resources.IProject;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IPath;
 import org.eclipse.debug.core.ILaunchConfiguration;
@@ -53,7 +56,7 @@ public class JUnitShortcut extends AbstractLaunchShortcut {
                 }
 
                 if (element != null) {
-                    launchJavaElement(element, mode);
+                    launchJavaElements(Collections.singletonList(element), mode);
                     return;
                 }
             }
@@ -68,20 +71,23 @@ public class JUnitShortcut extends AbstractLaunchShortcut {
     }
 
     @Override
-    protected void launchJavaElement(IJavaElement element, String mode) throws CoreException {
-        IPath projectPath = element.getJavaProject().getProject().getFullPath().makeRelative();
+    protected void launchJavaElements(List<IJavaElement> elements, String mode) throws CoreException {
+        assert elements != null && elements.size() > 0;
+
+        IProject targetProject = elements.get(0).getJavaProject().getProject();
+        IPath projectPath = targetProject.getFullPath().makeRelative();
 
         ILaunchConfiguration config = findLaunchConfig(projectPath);
         ILaunchConfigurationWorkingCopy wc = null;
 
         if (config == null) {
-            wc = createConfiguration(projectPath);
+            wc = createConfiguration(projectPath, targetProject);
         } else {
             wc = config.getWorkingCopy();
         }
 
         if (wc != null) {
-            customise(element, wc);
+            customise(elements, wc);
             config = wc.doSave();
             DebugUITools.launch(config, mode);
         }
@@ -94,12 +100,14 @@ public class JUnitShortcut extends AbstractLaunchShortcut {
      * annotation)
      * 
      */
-    private static void customise(IJavaElement element, ILaunchConfigurationWorkingCopy config) throws JavaModelException {
+    private static void customise(List<IJavaElement> elements, ILaunchConfigurationWorkingCopy config) throws JavaModelException {
 
-        assert element != null;
+        assert elements != null;
 
         Set<String> testNames = new HashSet<String>();
-        gatherTests(testNames, element, config);
+        for (IJavaElement element : elements) {
+            gatherTests(testNames, element, config);
+        }
         if (!testNames.isEmpty()) {
             config.setAttribute(OSGiJUnitLaunchDelegate.ORG_BNDTOOLS_TESTNAMES, Strings.join(" ", testNames));
         }

@@ -57,6 +57,7 @@ import org.eclipse.jface.viewers.ISelection;
 import org.eclipse.jface.viewers.ISelectionChangedListener;
 import org.eclipse.jface.viewers.IStructuredSelection;
 import org.eclipse.jface.viewers.SelectionChangedEvent;
+import org.eclipse.jface.viewers.StructuredSelection;
 import org.eclipse.jface.viewers.TreeViewer;
 import org.eclipse.jface.viewers.Viewer;
 import org.eclipse.jface.viewers.ViewerDropAdapter;
@@ -78,22 +79,25 @@ import org.eclipse.swt.layout.GridData;
 import org.eclipse.swt.layout.GridLayout;
 import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
-import org.eclipse.swt.widgets.Label;
 import org.eclipse.swt.widgets.Menu;
 import org.eclipse.swt.widgets.Tree;
-import org.eclipse.ui.ISharedImages;
+import org.eclipse.ui.IActionBars;
+import org.eclipse.ui.IWorkbench;
 import org.eclipse.ui.IWorkbenchActionConstants;
 import org.eclipse.ui.IWorkbenchPage;
+import org.eclipse.ui.IWorkbenchWindow;
 import org.eclipse.ui.PartInitException;
 import org.eclipse.ui.PlatformUI;
 import org.eclipse.ui.XMLMemento;
+import org.eclipse.ui.actions.ActionFactory;
+import org.eclipse.ui.forms.events.HyperlinkAdapter;
+import org.eclipse.ui.forms.events.HyperlinkEvent;
+import org.eclipse.ui.forms.widgets.FormText;
+import org.eclipse.ui.forms.widgets.FormToolkit;
 import org.eclipse.ui.ide.IDE;
 import org.eclipse.ui.part.ResourceTransfer;
 import org.eclipse.ui.part.ViewPart;
-import org.eclipse.ui.plugin.AbstractUIPlugin;
 import org.osgi.resource.Requirement;
-import org.osgi.util.promise.Promise;
-import org.osgi.util.promise.Success;
 
 import aQute.bnd.build.Workspace;
 import aQute.bnd.http.HttpClient;
@@ -113,9 +117,12 @@ import bndtools.model.repo.RepositoryBundleVersion;
 import bndtools.model.repo.RepositoryEntry;
 import bndtools.model.repo.RepositoryTreeLabelProvider;
 import bndtools.model.repo.SearchableRepositoryTreeContentProvider;
+import bndtools.preferences.BndPreferences;
 import bndtools.preferences.JpmPreferences;
+import bndtools.preferences.WorkspaceOfflineChangeAdapter;
 import bndtools.utils.SelectionDragAdapter;
 import bndtools.wizards.workspace.AddFilesToRepositoryWizard;
+import bndtools.wizards.workspace.WorkspaceSetupWizard;
 
 public class RepositoriesView extends ViewPart implements RepositoriesViewRefresher.RefreshModel {
     final static Pattern LABEL_PATTERN = Pattern.compile("(-)?(!)?([^{}]+)(?:\\{([^}]+)\\})?");
@@ -134,6 +141,22 @@ public class RepositoriesView extends ViewPart implements RepositoriesViewRefres
     private Action advancedSearchAction;
     private Action downloadAction;
     private String advancedSearchState;
+    private Action offlineAction;
+
+    private final BndPreferences prefs = new BndPreferences();
+
+    private final WorkspaceOfflineChangeAdapter workspaceOfflineListener = new WorkspaceOfflineChangeAdapter() {
+        @Override
+        public void workspaceOfflineChanged(boolean offline) {
+            configureOfflineAction();
+
+            if (!offline) {
+                // Fire a fake selection event so that repo plugins
+                // can do what they would do if they were already online
+                viewer.setSelection(viewer.getSelection(), false);
+            }
+        }
+    };
 
     @Override
     public void createPartControl(final Composite parent) {
@@ -142,16 +165,33 @@ public class RepositoriesView extends ViewPart implements RepositoriesViewRefres
         final StackLayout stackLayout = new StackLayout();
         parent.setLayout(stackLayout);
 
-        Composite labelParent = new Composite(parent, SWT.NONE);
-        FillLayout fillLayout = new FillLayout();
-        fillLayout.marginHeight = fillLayout.marginWidth = 10;
-        labelParent.setLayout(fillLayout);
-        Label label = new Label(labelParent, SWT.NONE);
-        label.setText("Repositories are loading, please wait...");
-        label.setBackground(parent.getBackground());
-        label.setForeground(parent.getForeground());
+        FormToolkit toolkit = new FormToolkit(parent.getDisplay());
+        Composite defaultParent = toolkit.createComposite(parent, SWT.NONE);
+        FillLayout fill = new FillLayout();
+        fill.marginHeight = 5;
+        fill.marginWidth = 5;
+        defaultParent.setLayout(fill);
 
-        stackLayout.topControl = labelParent;
+        if (!Central.hasWorkspaceDirectory()) {
+            FormText form = toolkit.createFormText(defaultParent, true);
+            form.setText("<form><p>No workspace configuration found. <a>Create a new Bnd workspace...</a></p></form>", true, false);
+            form.addHyperlinkListener(new HyperlinkAdapter() {
+                @Override
+                public void linkActivated(HyperlinkEvent e) {
+                    IWorkbench workbench = PlatformUI.getWorkbench();
+                    IWorkbenchWindow window = workbench.getActiveWorkbenchWindow();
+
+                    WorkspaceSetupWizard wizard = new WorkspaceSetupWizard();
+                    wizard.init(workbench, StructuredSelection.EMPTY);
+                    WizardDialog dialog = new WizardDialog(window.getShell(), wizard);
+                    dialog.open();
+                }
+            });
+        } else {
+            toolkit.createLabel(defaultParent, "Repositories are loading, please wait...");
+        }
+
+        stackLayout.topControl = defaultParent;
         parent.layout();
 
         final Composite mainPanel = new Composite(parent, SWT.NONE);
@@ -168,6 +208,13 @@ public class RepositoriesView extends ViewPart implements RepositoriesViewRefres
 
                 if (newInput != null) {
                     stackLayout.topControl = mainPanel;
+
+                    advancedSearchAction.setEnabled(true);
+                    refreshAction.setEnabled(true);
+                    collapseAllAction.setEnabled(true);
+
+                    configureOfflineAction();
+
                     parent.layout();
                 }
             }
@@ -193,6 +240,9 @@ public class RepositoriesView extends ViewPart implements RepositoriesViewRefres
         ViewerDropAdapter dropAdapter = new ViewerDropAdapter(viewer) {
             @Override
             public boolean validateDrop(Object target, int operation, TransferData transferType) {
+                if (target == null)
+                    return false;
+
                 if (canDrop(target, transferType))
                     return true;
 
@@ -349,7 +399,7 @@ public class RepositoriesView extends ViewPart implements RepositoriesViewRefres
                                     @Override
                                     protected IStatus run(IProgressMonitor monitor) {
                                         final File repoFile = entry.getFile(true);
-                                        if (repoFile.exists()) {
+                                        if (repoFile != null && repoFile.exists()) {
                                             getSite().getShell().getDisplay().asyncExec(new Runnable() {
                                                 @Override
                                                 public void run() {
@@ -380,6 +430,8 @@ public class RepositoriesView extends ViewPart implements RepositoriesViewRefres
                         } catch (Exception e) {
                             Plugin.getDefault().getLog().log(new Status(IStatus.ERROR, Plugin.PLUGIN_ID, 0, "Failed to load repository browser view", e));
                         }
+                    } else if (element instanceof RepositoryPlugin) {
+                        viewer.setExpandedState(element, !viewer.getExpandedState(element));
                     }
 
                 }
@@ -403,14 +455,49 @@ public class RepositoriesView extends ViewPart implements RepositoriesViewRefres
         createActions();
         fillToolBar(getViewSite().getActionBars().getToolBarManager());
 
-        // call refresh action once to make sure someone is trying to load repositories in this view
-        Central.onWorkspaceInit(new Success<Workspace,Void>() {
+        prefs.addPropertyChangeListener(workspaceOfflineListener);
+
+        // synthenic call to "refresh" so that we can get the repositories to show up in the UI
+        new WorkspaceJob("Load repositories") {
             @Override
-            public Promise<Void> call(Promise<Workspace> resolved) throws Exception {
-                refreshAction.run();
-                return null;
+            public IStatus runInWorkspace(IProgressMonitor monitor) throws CoreException {
+                try {
+                    Central.refreshPlugins();
+                } catch (Exception e) {
+                    // ignore errors there may be no workspace yet
+                }
+                return Status.OK_STATUS;
             }
-        });
+        }.schedule();
+
+        IActionBars actionBars = getViewSite().getActionBars();
+        actionBars.setGlobalActionHandler(ActionFactory.REFRESH.getId(), refreshAction);
+
+    }
+
+    private void configureOfflineAction() {
+        Workspace workspace = Central.getWorkspaceIfPresent();
+        if (workspace == null) {
+            offlineAction.setChecked(false);
+            offlineAction.setToolTipText("Go Offline");
+            offlineAction.setImageDescriptor(Icons.desc("connected"));
+            offlineAction.setDisabledImageDescriptor(Icons.desc("connected.disabled"));
+            offlineAction.setEnabled(false);
+            return;
+        }
+
+        if (prefs.isWorkspaceOffline()) {
+            offlineAction.setChecked(true);
+            offlineAction.setToolTipText("Go Online");
+            offlineAction.setImageDescriptor(Icons.desc("disconnected"));
+            offlineAction.setDisabledImageDescriptor(Icons.desc("disconnected.disabled"));
+        } else {
+            offlineAction.setChecked(false);
+            offlineAction.setToolTipText("Go Offline");
+            offlineAction.setImageDescriptor(Icons.desc("connected"));
+            offlineAction.setDisabledImageDescriptor(Icons.desc("connected.disabled"));
+        }
+        offlineAction.setEnabled(true);
     }
 
     protected void openURI(URI uri) {
@@ -459,6 +546,7 @@ public class RepositoriesView extends ViewPart implements RepositoriesViewRefres
     @Override
     public void dispose() {
         Central.removeRepositoriesViewer(viewer);
+        prefs.removePropertyChangeListener(workspaceOfflineListener);
         super.dispose();
     }
 
@@ -484,9 +572,11 @@ public class RepositoriesView extends ViewPart implements RepositoriesViewRefres
                 viewer.collapseAll();
             }
         };
+        collapseAllAction.setEnabled(false);
         collapseAllAction.setText("Collapse All");
         collapseAllAction.setToolTipText("Collapse All");
-        collapseAllAction.setImageDescriptor(AbstractUIPlugin.imageDescriptorFromPlugin(Plugin.PLUGIN_ID, "icons/collapseall.gif"));
+        collapseAllAction.setImageDescriptor(Icons.desc("collapse"));
+        collapseAllAction.setDisabledImageDescriptor(Icons.desc("collapse.disabled"));
 
         refreshAction = new Action() {
             @Override
@@ -501,18 +591,23 @@ public class RepositoriesView extends ViewPart implements RepositoriesViewRefres
                         monitor.subTask("Refresh all repositories");
 
                         try {
+                            refreshAction.setEnabled(false);
                             Central.refreshPlugins();
                         } catch (Exception e) {
                             return new Status(Status.ERROR, Plugin.PLUGIN_ID, "Failed to refresh plugins", e);
+                        } finally {
+                            refreshAction.setEnabled(true);
                         }
                         return Status.OK_STATUS;
                     }
                 }.schedule();
             }
         };
+        refreshAction.setEnabled(false);
         refreshAction.setText("Refresh");
         refreshAction.setToolTipText("Refresh Repositories Tree");
-        refreshAction.setImageDescriptor(AbstractUIPlugin.imageDescriptorFromPlugin(Plugin.PLUGIN_ID, "icons/arrow_refresh.png"));
+        refreshAction.setImageDescriptor(Icons.desc("refresh"));
+        refreshAction.setDisabledImageDescriptor(Icons.desc("refresh.disabled"));
 
         addBundlesAction = new Action() {
             @Override
@@ -534,7 +629,8 @@ public class RepositoriesView extends ViewPart implements RepositoriesViewRefres
         addBundlesAction.setEnabled(false);
         addBundlesAction.setText("Add");
         addBundlesAction.setToolTipText("Add Bundles to Repository");
-        addBundlesAction.setImageDescriptor(PlatformUI.getWorkbench().getSharedImages().getImageDescriptor(ISharedImages.IMG_OBJ_ADD));
+        addBundlesAction.setImageDescriptor(Icons.desc("add"));
+        addBundlesAction.setDisabledImageDescriptor(Icons.desc("add.disabled"));
 
         advancedSearchAction = new Action("Advanced Search", Action.AS_CHECK_BOX) {
             @Override
@@ -577,9 +673,11 @@ public class RepositoriesView extends ViewPart implements RepositoriesViewRefres
                 }
             }
         };
+        advancedSearchAction.setEnabled(false);
         advancedSearchAction.setText("Advanced Search");
         advancedSearchAction.setToolTipText("Toggle Advanced Search");
         advancedSearchAction.setImageDescriptor(Icons.desc("search"));
+        advancedSearchAction.setDisabledImageDescriptor(Icons.desc("search.disabled"));
 
         downloadAction = new Action() {
             @Override
@@ -624,9 +722,24 @@ public class RepositoriesView extends ViewPart implements RepositoriesViewRefres
                 return result;
             }
         };
+        downloadAction.setEnabled(false);
         downloadAction.setText("Download Repository Content");
         downloadAction.setImageDescriptor(Icons.desc("download"));
-        downloadAction.setEnabled(false);
+        downloadAction.setDisabledImageDescriptor(Icons.desc("download.disabled"));
+
+        offlineAction = new Action("Online/Offline Mode", Action.AS_CHECK_BOX) {
+            @Override
+            public void run() {
+                Workspace workspace = Central.getWorkspaceIfPresent();
+                if (workspace != null) {
+                    prefs.setWorkspaceOffline(offlineAction.isChecked());
+                }
+            }
+        };
+        offlineAction.setEnabled(false);
+        offlineAction.setToolTipText("Go Offline");
+        offlineAction.setImageDescriptor(Icons.desc("connected"));
+        offlineAction.setDisabledImageDescriptor(Icons.desc("connected.disabled"));
 
         viewer.addSelectionChangedListener(new ISelectionChangedListener() {
             @Override
@@ -697,7 +810,7 @@ public class RepositoriesView extends ViewPart implements RepositoriesViewRefres
 
                                         description = m.group(4);
                                     }
-                                    Action a = new Action(label) {
+                                    Action a = new Action(label.replace("&", "&&")) {
                                         @Override
                                         public void run() {
                                             Job backgroundJob = new Job("Repository Action '" + getText() + "'") {
@@ -760,6 +873,8 @@ public class RepositoriesView extends ViewPart implements RepositoriesViewRefres
         toolBar.add(refreshAction);
         toolBar.add(collapseAllAction);
         toolBar.add(addBundlesAction);
+        toolBar.add(new Separator());
+        toolBar.add(offlineAction);
         toolBar.add(new Separator());
     }
 

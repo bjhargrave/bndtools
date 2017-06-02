@@ -62,7 +62,7 @@ public class WorkspaceMainPart extends SectionPart {
         if (mainFile) {
             section.setDescription("This file is used to define your specific settings. Default settings are defined in the files linked below.");
         } else {
-            section.setDescription("This file is part of the default bnd workspace settings. It should not be edited, instead define overrides in the main build.bnd file.");
+            section.setDescription("This file is part of the default Bnd workspace settings. It should not be edited, instead define overrides in the main build.bnd file.");
             section.setTitleBarBackground(warningColor);
         }
 
@@ -109,10 +109,13 @@ public class WorkspaceMainPart extends SectionPart {
         FillLayout fillLayout = new FillLayout();
         fillLayout.marginHeight = fillLayout.marginWidth = 10;
         labelParent.setLayout(fillLayout);
-        Label label = new Label(labelParent, SWT.NONE);
-        label.setText("Workspace is loading, please wait...");
-        label.setBackground(container.getBackground());
-        label.setForeground(container.getForeground());
+
+        if (!Central.isWorkspaceInited()) {
+            Label label = new Label(labelParent, SWT.NONE);
+            label.setText("Workspace is loading, please wait...");
+            label.setBackground(container.getBackground());
+            label.setForeground(container.getForeground());
+        }
 
         stackLayout.topControl = labelParent;
         container.layout();

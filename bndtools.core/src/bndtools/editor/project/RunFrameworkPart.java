@@ -100,6 +100,10 @@ public class RunFrameworkPart extends BndEditorPart implements PropertyChangeLis
                 lock.ifNotModifying(new Runnable() {
                     @Override
                     public void run() {
+                        Object element = ((IStructuredSelection) frameworkViewer.getSelection()).getFirstElement();
+                        if (element == null || element instanceof LoadingContentElement) {
+                            return;
+                        }
                         markDirty();
                         selectedFramework = cmbFramework.getText();
                     }
@@ -176,9 +180,14 @@ public class RunFrameworkPart extends BndEditorPart implements PropertyChangeLis
                 }
 
                 selectedFramework = model.getRunFw();
-                if (selectedFramework == null)
-                    selectedFramework = "";
-                cmbFramework.setText(selectedFramework);
+                if (selectedFramework != null) {
+                    Object[] elements = fwkContentProvider.getElements(model.getWorkspace());
+                    for (Object element : elements) {
+                        if (element != null && element.toString().equals(selectedFramework)) {
+                            frameworkViewer.setSelection(new StructuredSelection(element));
+                        }
+                    }
+                }
 
                 selectedEE = model.getEE();
                 eeViewer.setSelection(selectedEE != null ? new StructuredSelection(selectedEE) : StructuredSelection.EMPTY);
